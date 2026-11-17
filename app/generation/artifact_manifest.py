@@ -28,6 +28,8 @@ from app.template_analysis.schemas import LayoutTemplateSpec
 
 MANIFEST_FILENAME = "artifact_manifest.json"
 LAYOUT_SNAPSHOT_FILENAME = "generation_layout_spec.json"
+#: The selecting artifact's own record of an explicit reusable-template choice.
+REUSABLE_REFERENCE_FILENAME = "reusable_template_reference.json"
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -163,6 +165,7 @@ def _published_path(view: TargetSet, path: Path) -> Path:
 def capture_generation_inputs(
     directory: Path, *, revision_id: str, layout_path: Path | None,
     target_path: Path | None, target_set: TargetSet | None = None,
+    reusable_reference_path: Path | None = None,
 ) -> dict[str, FileIdentity]:
     """Freeze existing inputs before rendering; absent legacy evidence stays absent."""
     view = target_set or TargetSet(directory)
@@ -186,7 +189,12 @@ def capture_generation_inputs(
                 paths[name] = target_path.parent / name
     if layout_path is not None:
         paths["approved_layout"] = _published_path(view, layout_path)
-        paths["layout_proof_approval"] = directory / "layout_proofs" / "approval.json"
+        if reusable_reference_path is not None:
+            # An explicit selection replaces the artifact-local approval input:
+            # the source proof set stays where it is and is never copied here.
+            paths["reusable_template_reference"] = reusable_reference_path
+        else:
+            paths["layout_proof_approval"] = directory / "layout_proofs" / "approval.json"
         if (layout_path.parent / "design_state.json").is_file():
             paths["approved_design_state"] = layout_path.parent / "design_state.json"
     return {name: identify_file(directory, path) for name, path in paths.items()}

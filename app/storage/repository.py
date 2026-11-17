@@ -51,6 +51,15 @@ def layout_proof_repository(database_url: str | None) -> LayoutProofRepository |
     return PostgresLayoutProofRepository(postgres_engine(database_url))
 
 
+def reusable_template_repository(database_url: str | None):
+    """Reusable-template references have no local (SQLite) store: ADR 0009."""
+    if database_url is None:
+        return None
+    from app.storage.postgres import PostgresReusableTemplateRepository, postgres_engine
+
+    return PostgresReusableTemplateRepository(postgres_engine(database_url))
+
+
 def design_repository(database_url: str | None) -> DesignRepository | None:
     if database_url is None:
         return None

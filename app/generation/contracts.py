@@ -53,6 +53,9 @@ class GenerateRequest(BaseModel):
     artifact_id: str | None = None
     target_format: TargetFormatMetadata | None = None
     design_id: str | None = None
+    #: Explicit selection of a recorded reusable template reference (ADR 0009).
+    #: Absent means today's artifact-local proof gate, never implicit reuse.
+    reusable_template_id: str | None = None
     allow_existing_template: bool = False
     allow_built_in_fallback: bool = False
 

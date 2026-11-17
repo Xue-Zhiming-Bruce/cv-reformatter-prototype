@@ -38,6 +38,7 @@ from app.generation.composition_report import (
 )
 from app.generation.artifact_manifest import (
     MANIFEST_FILENAME,
+    REUSABLE_REFERENCE_FILENAME,
     capture_generation_inputs,
     write_artifact_manifest,
 )
@@ -76,6 +77,7 @@ from app.storage.repository import (
     generation_repository,
     layout_proof_repository,
     profile_revision_repository,
+    reusable_template_repository,
 )
 from app.template_analysis.artifacts import (
     LAYOUT_SPEC_FILENAME,
@@ -554,18 +556,33 @@ def require_layout_proof_approval(
     target_pdf: Path,
     style_spec: TemplateStyleSpec | LayoutTemplateSpec,
     required_execution: str = "agentic-provider/1",
+    reusable_template_id: str | None = None,
 ) -> Any:
-    """Load and validate the persisted layout-proof approval for generation.
+    """Load and validate the layout-proof approval this generation renders from.
 
-    Returns the approved ``LayoutProofApproval`` or raises a 409 generation
-    error. Never falls back to an unapproved template. The proof evidence must
-    also meet ``required_execution``: the shared agentic route will not inherit
-    an offline job's approval because the target/layout/renderer identities
-    happen to match.
+    Without ``reusable_template_id`` this is the artifact's own current
+    approval. With one, an explicitly selected reusable reference (ADR 0009) is
+    resolved instead: its source approval is re-verified against the selecting
+    artifact's target, spec and renderer, and a refusal is a structured 409
+    naming the differing member(s). Never an implicit reuse, never a fallback,
+    never a 500. The proof evidence must also meet ``required_execution``: the
+    shared agentic route will not inherit an offline job's approval because the
+    target/layout/renderer identities happen to match.
     """
     try:
-        approval = load_layout_proof_approval(
-            artifact_dir, repository=layout_proof_repository(settings.database_url)
+        approval = (
+            _selected_layout_proof_approval(
+                settings,
+                artifact_dir=artifact_dir,
+                artifact_id=artifact_id,
+                target_pdf=target_pdf,
+                style_spec=style_spec,
+                reusable_template_id=reusable_template_id,
+            )
+            if reusable_template_id is not None
+            else load_layout_proof_approval(
+                artifact_dir, repository=layout_proof_repository(settings.database_url)
+            )
         )
     except LayoutProofMismatchError as exc:
         raise GenerationError(
@@ -597,7 +614,7 @@ def require_layout_proof_approval(
                 "options": ["approve_layout_proofs"],
             },
         )
-    if approval.artifact_id != artifact_id:
+    if approval.artifact_id != artifact_id and reusable_template_id is None:
         raise GenerationError(
             409,
             {
@@ -646,6 +663,81 @@ def require_layout_proof_approval(
             409, {"error_code": "layout_proof_mismatch", "message": str(exc)}
         ) from exc
     return approval
+
+
+def _selected_layout_proof_approval(
+    settings: GenerationSettings,
+    *,
+    artifact_dir: Path,
+    artifact_id: str,
+    target_pdf: Path,
+    style_spec: TemplateStyleSpec | LayoutTemplateSpec,
+    reusable_template_id: str,
+) -> Any:
+    """Resolve an explicit reusable-template selection, refusing as a 409."""
+    from app.template_analysis.template_reuse import (
+        ReusableTemplateError,
+        require_reference_store,
+        resolve_reusable_template,
+    )
+
+    try:
+        repository = require_reference_store(
+            reusable_template_repository(settings.database_url), reusable_template_id
+        )
+        return resolve_reusable_template(
+            artifact_dir=artifact_dir,
+            artifact_id=artifact_id,
+            reference_id=reusable_template_id,
+            repository=repository,
+            target_pdf=target_pdf,
+            layout_spec=style_spec,
+        )
+    except ReusableTemplateError as exc:
+        raise reusable_template_refusal(exc) from exc
+
+
+def reusable_template_refusal(exc: Any) -> GenerationError:
+    """The structured 409 a refused selection returns; never a 500, never a fallback."""
+    return GenerationError(
+        409,
+        {
+            "error_code": exc.error_code,
+            "message": str(exc),
+            "differing_members": exc.differing_members,
+            "options": exc.options,
+        },
+    )
+
+
+def record_selected_reference(
+    settings: GenerationSettings, artifact_dir: Path, request: GenerateRequest
+) -> Any:
+    """Persist this artifact's own selection record and return the reference.
+
+    The record is what the artifact manifest freezes and what the publication
+    recheck reads back; it is written into the selecting artifact only.
+    """
+    from app.template_analysis.template_reuse import (
+        ReusableTemplateError,
+        require_reference_store,
+        stored_reference,
+    )
+
+    try:
+        reference = stored_reference(
+            require_reference_store(
+                reusable_template_repository(settings.database_url),
+                request.reusable_template_id,
+            ),
+            request.reusable_template_id,
+        )
+    except ReusableTemplateError as exc:
+        raise reusable_template_refusal(exc) from exc
+    write_json(
+        artifact_dir / REUSABLE_REFERENCE_FILENAME, reference.model_dump(mode="json")
+    )
+    return reference
 
 
 def write_profile_debug_artifacts(
@@ -767,6 +859,8 @@ class PreparedGeneration:
     production_render_plan: Any
     fallback_warnings: list[str]
     manifest_inputs: dict[str, Any]
+    #: The recorded reusable-template selection this generation made, if any.
+    reusable_template_reference: Any = None
     debug_artifacts: dict[str, str] = field(default_factory=dict)
 
 
@@ -950,6 +1044,7 @@ def prepare_generation(
         and target_format.used_as_template_source
         and style_spec is not None
     )
+    reusable_reference = None
     if uses_uploaded_target:
         layout_proof_approval = require_layout_proof_approval(
             settings,
@@ -958,7 +1053,10 @@ def prepare_generation(
             target_pdf=target_document,
             style_spec=style_spec,
             required_execution=required_execution,
+            reusable_template_id=request.reusable_template_id,
         )
+        if request.reusable_template_id is not None:
+            reusable_reference = record_selected_reference(settings, artifact_dir, request)
     else:
         layout_proof_approval = None
 
@@ -995,6 +1093,11 @@ def prepare_generation(
             ),
             target_path=target_document,
             target_set=target_set,
+            reusable_reference_path=(
+                artifact_dir / REUSABLE_REFERENCE_FILENAME
+                if reusable_reference is not None
+                else None
+            ),
         )
     except (OSError, ValueError) as exc:
         raise GenerationError(
@@ -1068,6 +1171,7 @@ def prepare_generation(
         design_template_version=design_template_version,
         uses_uploaded_target=uses_uploaded_target,
         layout_proof_approval=layout_proof_approval,
+        reusable_template_reference=reusable_reference,
         normalized_document=normalized_document,
         effective_layout_spec=effective_layout_spec,
         production_render_plan=production_render_plan,
@@ -1099,6 +1203,7 @@ def render_prepared_generation(
                 target_pdf=prepared.target_document,
                 max_model_requests=max_model_requests,
                 max_tool_calls=max_tool_calls,
+                reference=prepared.reusable_template_reference,
             )
             # Read the arrangement plan of the version that was just published;
             # a stale or unselected plan is reported as unknown, never used.

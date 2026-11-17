@@ -333,6 +333,7 @@ def approve_layout_proof(
     presentation_label_catalog_sha256: str | None = None,
     repository: LayoutProofRepository | None = None,
     design_id: str | None = None,
+    reusable_repository: Any | None = None,
 ) -> LayoutProofApproval:
     """Approve a complete three-variant proof set by recomputing evidence.
 
@@ -378,7 +379,27 @@ def approve_layout_proof(
     )
     verify_approval_files(artifact_dir, approval)
     save_layout_proof_approval(artifact_dir, approval, repository=repository)
+    _record_reusable_reference(artifact_dir, artifact_id, approval, reusable_repository)
     return approval
+
+
+def _record_reusable_reference(
+    artifact_dir: str | Path,
+    artifact_id: str,
+    approval: LayoutProofApproval,
+    reusable_repository: Any | None,
+) -> None:
+    """A new explicit approval is the only event that records a reusable identity."""
+    if reusable_repository is None:
+        return
+    from app.template_analysis.template_reuse import record_reusable_template_reference
+
+    record_reusable_template_reference(
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id,
+        approval=approval,
+        repository=reusable_repository,
+    )
 
 
 def resolve_layout_proof_context(
@@ -640,6 +661,17 @@ def reject_layout_proof(
     return approval
 
 
+def require_approval_ownership(
+    approval: LayoutProofApproval, *, artifact_id: str, reference: Any | None
+) -> None:
+    """The generating artifact owns the approval, or it selected that reference."""
+    if approval.artifact_id == artifact_id:
+        return
+    if reference is not None and reference.approval_id == approval.approval_id:
+        return
+    raise LayoutProofMismatchError("approval does not belong to this artifact")
+
+
 def render_candidate_document(
     *,
     approval: LayoutProofApproval | None,
@@ -650,11 +682,14 @@ def render_candidate_document(
     target_pdf: Path | None = None,
     max_model_requests: int | None = None,
     max_tool_calls: int | None = None,
+    reference: Any | None = None,
 ) -> tuple[Path, Path]:
     """Render final candidate HTML/PDF only from an approved layout proof.
 
-    The approval must exist, be approved, belong to exactly this artifact,
-    and cover exactly this ``LayoutTemplateSpec`` (deterministic checksum).
+    The approval must exist, be approved, cover exactly this
+    ``LayoutTemplateSpec`` (deterministic checksum) and belong to this artifact
+    **or** be the approval an explicitly selected ``reference`` names (ADR
+    0009); a reference never relaxes the spec, target or renderer checks.
     Candidate content enters only through the recruiter-approved
     ``ClientFacingRenderContext``; the existing renderer hides empty optional
     sections and never invents facts. Returns ``(html_path, pdf_path)``.
@@ -663,10 +698,7 @@ def render_candidate_document(
         raise LayoutProofNotApprovedError(
             "final candidate generation requires an approved layout proof"
         )
-    if approval.artifact_id != artifact_id:
-        raise LayoutProofMismatchError(
-            "approval does not belong to this artifact"
-        )
+    require_approval_ownership(approval, artifact_id=artifact_id, reference=reference)
     if approval.layout_spec_checksum != layout_spec_checksum(layout_spec):
         raise LayoutProofMismatchError(
             "approval does not cover this LayoutTemplateSpec (checksum mismatch)"

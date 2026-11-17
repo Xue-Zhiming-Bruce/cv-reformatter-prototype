@@ -21,7 +21,10 @@ from app.final_acceptance import FinalOutputAcceptance, FinalOutputIdentity
 from app.generation.artifact_manifest import ArtifactManifest
 from app.generation.render_plan import layout_spec_sha256
 from app.template_analysis.schemas import LayoutTemplateSpec
-from app.template_analysis.layout_proof_schemas import LayoutProofApproval
+from app.template_analysis.layout_proof_schemas import (
+    LayoutProofApproval,
+    ReusableTemplateReference,
+)
 from app.template_analysis.design_schemas import APPROVABLE_DESIGN_STATES, DesignArtifactState
 
 
@@ -123,6 +126,23 @@ layout_proof_approvals = Table(
     CheckConstraint("jsonb_typeof(body::jsonb) = 'object'", name="ck_proof_approval_body"),
 )
 Index("ix_proof_approval_current", layout_proof_approvals.c.artifact_id, layout_proof_approvals.c.ordinal)
+reusable_template_references = Table(
+    "reusable_template_references", metadata,
+    Column("scope_id", Text, primary_key=True),
+    Column("identity_sha256", Text, primary_key=True),
+    Column("artifact_id", Text, nullable=False),
+    Column("approval_id", Text, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("body_sha256", Text, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    ForeignKeyConstraint(["artifact_id", "approval_id"],
+        ["layout_proof_approvals.artifact_id", "layout_proof_approvals.approval_id"],
+        ondelete="CASCADE", name="fk_reusable_reference_approval"),
+    CheckConstraint("scope_id = 'local-synthetic'", name="ck_reusable_reference_scope"),
+    CheckConstraint("identity_sha256 ~ '^[0-9a-f]{64}$' AND body_sha256 ~ '^[0-9a-f]{64}$'", name="ck_reusable_reference_checksums"),
+    CheckConstraint("jsonb_typeof(body::jsonb) = 'object'", name="ck_reusable_reference_body"),
+)
+Index("ix_reusable_reference_scope", reusable_template_references.c.scope_id, reusable_template_references.c.recorded_at)
 template_design_versions = Table(
     "template_design_versions", metadata,
     Column("event_id", BigInteger, Identity(), primary_key=True),
@@ -425,19 +445,7 @@ class PostgresGenerationRepository:
                     or hashlib.sha256(design_row["body"].encode()).hexdigest() != design_ref.sha256
                     or hashlib.sha256(json.dumps(design.layout_spec_json, indent=2, ensure_ascii=False, sort_keys=True).encode()).hexdigest() != layout_ref.sha256):
                 raise ArtifactStoreConflict("The approved design changed before generation was recorded; review the current design.")
-        approval_ref = manifest.inputs.get("layout_proof_approval")
-        if approval_ref is not None:
-            proof_row = connection.execute(select(layout_proof_approvals).where(
-                layout_proof_approvals.c.artifact_id == manifest.artifact_id,
-            ).order_by(layout_proof_approvals.c.ordinal.desc()).limit(1)).mappings().first()
-            approval = _proof_approval(proof_row) if proof_row is not None else None
-            target_ref = manifest.inputs.get("target_document")
-            if (approval is None or not approval.is_approved or target_ref is None
-                    or approval.layout_spec_checksum != manifest.output_identity.layout_spec_sha256
-                    or approval.target_checksum != target_ref.sha256
-                    or approval.renderer_version != manifest.renderer_version
-                    or hashlib.sha256(proof_row["body"].encode()).hexdigest() != approval_ref.sha256):
-                raise ArtifactStoreConflict("The layout proof approval changed before generation was recorded; review the current proof set.")
+        _require_proof_input(connection, manifest, Path(artifact["artifact_dir"]))
         connection.execute(insert(generation_versions).values(
             artifact_id=manifest.artifact_id, generation_id=generation_id,
             profile_revision_id=manifest.output_identity.profile_revision_id,
@@ -579,6 +587,124 @@ class PostgresLayoutProofRepository:
         if row is None:
             return None
         return _proof_approval(row)
+
+
+class PostgresReusableTemplateRepository:
+    """Recorded reusable-template references (ADR 0009); additive, no backfill.
+
+    A reference is written once per identity and never updated: re-approving an
+    identical proof set keeps the first record, which still points at an
+    approved row of the append-only approval history.
+    """
+
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+
+    def save(self, reference: ReusableTemplateReference) -> None:
+        body = json.dumps(reference.model_dump(mode="json"), indent=2, ensure_ascii=False, sort_keys=True)
+        try:
+            with self.engine.begin() as connection:
+                approval = connection.execute(select(layout_proof_approvals.c.approval_id).where(
+                    layout_proof_approvals.c.artifact_id == reference.artifact_id,
+                    layout_proof_approvals.c.approval_id == reference.approval_id,
+                )).first()
+                if approval is None:
+                    raise ArtifactStoreConflict("A reusable reference requires its source approval record.")
+                connection.execute(insert(reusable_template_references).values(
+                    scope_id=reference.scope_id, identity_sha256=reference.reference_id,
+                    artifact_id=reference.artifact_id, approval_id=reference.approval_id,
+                    body=body, body_sha256=hashlib.sha256(body.encode()).hexdigest(),
+                ).on_conflict_do_nothing(index_elements=["scope_id", "identity_sha256"]))
+        except SQLAlchemyError as exc:
+            raise ArtifactStoreError("The reusable template reference could not be saved to PostgreSQL; no filesystem fallback was used.") from exc
+
+    def resolve(self, *, scope_id: str, identity_sha256: str) -> ReusableTemplateReference | None:
+        try:
+            with self.engine.connect() as connection:
+                row = connection.execute(select(reusable_template_references).where(
+                    reusable_template_references.c.scope_id == scope_id,
+                    reusable_template_references.c.identity_sha256 == identity_sha256,
+                )).mappings().first()
+        except SQLAlchemyError as exc:
+            raise ArtifactStoreError("Reusable template references could not be read from PostgreSQL; verify availability and migrations.") from exc
+        return _reusable_reference(row) if row is not None else None
+
+    def list_current(self, *, scope_id: str) -> list[ReusableTemplateReference]:
+        try:
+            with self.engine.connect() as connection:
+                rows = connection.execute(select(reusable_template_references).where(
+                    reusable_template_references.c.scope_id == scope_id,
+                ).order_by(reusable_template_references.c.recorded_at.desc(),
+                    reusable_template_references.c.identity_sha256)).mappings().all()
+        except SQLAlchemyError as exc:
+            raise ArtifactStoreError("Reusable template references could not be read from PostgreSQL; verify availability and migrations.") from exc
+        return [_reusable_reference(row) for row in rows]
+
+
+def _reusable_reference(row: Mapping[str, Any]) -> ReusableTemplateReference:
+    try:
+        reference = ReusableTemplateReference.model_validate_json(row["body"])
+        if (reference.reference_id != row["identity_sha256"] or reference.scope_id != row["scope_id"]
+                or reference.artifact_id != row["artifact_id"] or reference.approval_id != row["approval_id"]
+                or hashlib.sha256(row["body"].encode()).hexdigest() != row["body_sha256"]):
+            raise ValueError("Stored reusable reference identity mismatch")
+        return reference
+    except ValueError as exc:
+        raise ArtifactStoreError("Stored reusable template reference failed schema or identity validation.") from exc
+
+
+def _require_proof_input(
+    connection: Connection, manifest: ArtifactManifest, artifact_dir: Path
+) -> None:
+    """A published generation is bound to its own approval or its selection."""
+    target_ref = manifest.inputs.get("target_document")
+    approval_ref = manifest.inputs.get("layout_proof_approval")
+    if approval_ref is not None:
+        proof_row = connection.execute(select(layout_proof_approvals).where(
+            layout_proof_approvals.c.artifact_id == manifest.artifact_id,
+        ).order_by(layout_proof_approvals.c.ordinal.desc()).limit(1)).mappings().first()
+        approval = _proof_approval(proof_row) if proof_row is not None else None
+        if (approval is None or not approval.is_approved or target_ref is None
+                or approval.layout_spec_checksum != manifest.output_identity.layout_spec_sha256
+                or approval.target_checksum != target_ref.sha256
+                or approval.renderer_version != manifest.renderer_version
+                or hashlib.sha256(proof_row["body"].encode()).hexdigest() != approval_ref.sha256):
+            raise ArtifactStoreConflict("The layout proof approval changed before generation was recorded; review the current proof set.")
+    # An explicit selection is frozen here too: an absent, stale or no-longer
+    # approved reference blocks the commit instead of publishing against a
+    # template this artifact never proved.
+    reference_ref = manifest.inputs.get("reusable_template_reference")
+    if reference_ref is not None and (target_ref is None or not _reusable_reference_holds(
+        connection, artifact_dir, reference_ref,
+        layout_sha256=manifest.output_identity.layout_spec_sha256,
+        target_sha256=target_ref.sha256,
+    )):
+        raise ArtifactStoreConflict("The reusable template reference changed before generation was recorded; select it again.")
+
+
+def _reusable_reference_holds(
+    connection: Connection, artifact_dir: Path, reference_ref: Any, *,
+    layout_sha256: str, target_sha256: str,
+) -> bool:
+    """The recorded selection still resolves to an approved source proof set."""
+    try:
+        reference = ReusableTemplateReference.model_validate_json(
+            (artifact_dir / reference_ref.path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    row = connection.execute(select(reusable_template_references).where(
+        reusable_template_references.c.scope_id == reference.scope_id,
+        reusable_template_references.c.identity_sha256 == reference.reference_id,
+    )).mappings().first()
+    proof_row = connection.execute(select(layout_proof_approvals).where(
+        layout_proof_approvals.c.artifact_id == reference.artifact_id,
+        layout_proof_approvals.c.approval_id == reference.approval_id,
+    )).mappings().first()
+    if row is None or proof_row is None:
+        return False
+    approval = _proof_approval(proof_row)
+    return (approval.is_approved and approval.layout_spec_checksum == layout_sha256
+            and approval.target_checksum == target_sha256)
 
 
 def _insert_design_version(connection: Connection, state: DesignArtifactState) -> None:
