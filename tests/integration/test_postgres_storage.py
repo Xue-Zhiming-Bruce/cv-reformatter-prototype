@@ -203,7 +203,7 @@ print(json.dumps(response.json()))
     after = json.loads(restarted.stdout)["artifacts"]
     assert len(after) == 1 and after[0] == before
     # The database holds metadata references; document bytes remain in the artifact store.
-    assert set(inspect(engine).get_table_names()) == {"artifact_sessions", "candidate_profile_revisions", "generation_versions", "final_output_acceptances", "layout_proof_approvals", "reusable_template_references", "template_design_versions", "workflow_jobs", "job_attempts", "alembic_version"}
+    assert set(inspect(engine).get_table_names()) == {"artifact_sessions", "candidate_profile_revisions", "generation_versions", "final_output_acceptances", "layout_proof_approvals", "reusable_template_references", "template_design_versions", "workflow_jobs", "job_attempts", "conversion_envelopes", "conversion_envelope_events", "alembic_version"}
     assert (tmp_path / artifact_id / "source_resume.docx").read_bytes() == source.getvalue()
     directory = tmp_path / artifact_id
     original_outputs = {name: (directory / name).read_bytes() for name in (
