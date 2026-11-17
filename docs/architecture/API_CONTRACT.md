@@ -100,7 +100,10 @@ Response fields:
   element is allowed, so text a CSS `content:` rule paints is not detected —, and
   drawings and pictures
   that hold only art, not blocking because OCR is out of scope; a drawing that
-  carries a character is a text box instead, and blocks. One entry per kind and
+  carries a character outside a text box it holds is a text box itself, and
+  blocks — also when the same drawing or group shape holds a box that was read,
+  because reading the box does not read the paint text beside it. One entry per
+  kind and
   document part, counting each element found, so two drawings that point at one
   unread part are two. The branch selection the inline walk makes also decides
   which of a drawing's `mc:AlternateContent` branches contributes text), naming

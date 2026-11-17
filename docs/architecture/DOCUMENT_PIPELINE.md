@@ -114,9 +114,13 @@ of its own directly after the paragraph that anchors the drawing, in the order
 the drawing's own selected markup holds its boxes. That is the one authored
 position the file records: it does not reconstruct visual page reading order,
 and it neither invents a page position nor splices box text into the middle of
-the anchoring line. A drawing whose text is DrawingML shape text outside a
-`w:txbxContent` text body (`a:t`) is not read this way and stays a reported
-`text_box`.
+the anchoring line. A box that another box's paragraph anchors is read where that
+inner paragraph sits, once: it is not also queued at the outer anchor, so a box in
+a box is neither duplicated nor detached from the paragraph that places it.
+A drawing whose text is DrawingML shape text outside a `w:txbxContent` text body
+(`a:t`) is not read this way and keeps its blocking `text_box` entry — also on a
+drawing or group shape that holds a box this walk did read: reading a box closes
+that box's entry only, never the paint text drawn beside it.
 
 The descent is bounded: wrappers, content controls, table cells and text boxes
 each cost one level of `_MAX_BLOCK_DEPTH`, and a descent past it is reported as
