@@ -36,6 +36,23 @@ from app.storage.execution_envelope import (
 )
 
 
+def test_the_store_follows_the_configured_database_url_not_a_late_environment_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One backend per process: a repopulated ``DATABASE_URL`` must not redirect it.
+
+    ``load_dotenv`` can put the developer's database back into the environment
+    after a test disabled it, which used to split the writer and the reader of an
+    envelope across two stores. The application's own value decides.
+    """
+    from app import main
+    from app.storage import envelope_store
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://ignored@127.0.0.1:1/ignored")
+    monkeypatch.setattr(main, "DATABASE_URL", None)
+    assert isinstance(envelope_store.default_store(), InMemoryExecutionEnvelopeStore)
+
+
 def _store() -> tuple[InMemoryExecutionEnvelopeStore, str]:
     store = InMemoryExecutionEnvelopeStore()
     return store, open_envelope(artifact_id="artifact_one", store=store)["conversion_id"]
