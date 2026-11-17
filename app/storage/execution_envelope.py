@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.jobs import TARGET_MAX_MODEL_REQUESTS, TARGET_MAX_TOOL_CALLS, TARGET_TIMEOUT_SECONDS
+from app.jobs import (TARGET_MAX_ATTEMPTS, TARGET_MAX_MODEL_REQUESTS, TARGET_MAX_TOOL_CALLS,
+                      TARGET_TIMEOUT_SECONDS)
 from app.pipeline import repair_policy
 from app.pipeline.runtime import RunBudget
 from app.storage.envelope_store import EnvelopeUnavailable, ExecutionEnvelopeStore, default_store
@@ -56,8 +57,10 @@ class EnvelopeLimits:
 
     model_requests: int = TARGET_MAX_MODEL_REQUESTS  # app/jobs.py
     tool_calls: int = TARGET_MAX_TOOL_CALLS  # app/jobs.py
-    #: The tree dispatches exactly one Adobe Extract operation per target analysis.
-    analyzer_operations: int = 1
+    #: Adobe Extract operations are their own unit (never model tokens). No
+    #: analyzer ceiling exists in the tree, so the reused bound is the one it does
+    #: apply to a repeated uploaded-target operation: ``TARGET_MAX_ATTEMPTS``.
+    analyzer_operations: int = TARGET_MAX_ATTEMPTS
     protected_model_requests: int = field(default_factory=protected_model_requests)
 
     def by_dimension(self) -> dict[str, int]:

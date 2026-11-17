@@ -51,6 +51,9 @@ class RunBudget:
             "tool_calls": 0,
         }
     )
+    #: The conversion envelope's pre-dispatch hook (ADR 0010); only a stage's root
+    #: budget carries it, so a nested budget's spend is reserved exactly once.
+    envelope: Any = field(default=None, repr=False)
 
     def remaining_model_requests(self) -> int:
         return self.max_model_requests - self.model_requests
@@ -71,6 +74,10 @@ class RunBudget:
     ) -> None:
         """Hard pre-execution cap: reject BEFORE incrementing when the action
         would exceed the limit, so persisted executed counts never do."""
+        if requests and self.envelope is not None:
+            # Reserve against the persisted conversion balance before dispatch;
+            # the refusal is the envelope's, not this execution's.
+            self.envelope.reserve("model_requests", requests)
         if self.model_requests + requests > self.max_model_requests:
             raise BudgetExhausted(
                 f"global model budget exhausted: {self.model_requests}+{requests} "
@@ -86,9 +93,14 @@ class RunBudget:
             self.usage["input_tokens"] += int(getattr(usage, "input_tokens", 0) or 0)
             self.usage["output_tokens"] += int(getattr(usage, "output_tokens", 0) or 0)
             self.usage["tool_calls"] += int(getattr(usage, "tool_calls", 0) or 0)
+            if self.envelope is not None:
+                # Post-response usage is observed, never compared with a ceiling.
+                self.envelope.observe(usage)
 
     def spend_tool(self, tool: str) -> None:
         """Hard pre-execution cap, as spend_model."""
+        if self.envelope is not None:
+            self.envelope.reserve("tool_calls", 1)
         if self.tool_calls + 1 > self.max_tool_calls:
             raise BudgetExhausted(
                 f"global tool budget exhausted: {self.tool_calls}+1 would exceed {self.max_tool_calls}"

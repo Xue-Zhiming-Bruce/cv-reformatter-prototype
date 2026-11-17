@@ -23,6 +23,7 @@ from app.pipeline.evidence import (
 from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
+from app.storage.execution_envelope import seed_budget
 from app.resource_limits import bounded_pdf_page_count
 from app.pipeline.run_models import E5LoopRecord, PresentationLabelApproval
 from app.pipeline import finding_disposition, measurement, presentation_labels, prompts, quality, repair_policy, review, run_artifacts, service
@@ -348,10 +349,12 @@ def render_agentic(
         max_repair_rounds=settings["max_repair_rounds"],
         builder_reserve_requests=AGENTIC_BUILDER_RESERVE_REQUESTS,
         presentation_label_approval=presentation_label_approval,
-        budget=RunBudget(
+        # A fresh root per render, seeded from the conversion envelope's remaining
+        # balance (ADR 0010): a re-run continues the balance instead of resetting it.
+        budget=seed_budget(RunBudget(
             max_model_requests=max_model_requests or settings["max_model_requests"],
             max_tool_calls=max_tool_calls or settings["max_tool_calls"],
-            max_request_bytes=MAX_REQUEST_BYTES),
+            max_request_bytes=MAX_REQUEST_BYTES)),
     )
     record = E5LoopRecord.model_validate(raw_record)
     lane = record.lanes.get("a")

@@ -103,9 +103,20 @@ from app.storage.artifact_store import (
     ArtifactStoreError,
 )
 from app.storage.local_db import DEFAULT_DATABASE_PATH
+from app.storage.envelope_store import ExecutionEnvelopeStore
+from app.storage.execution_envelope import (
+    STAGE_CANDIDATE_EXTRACTION,
+    STAGE_TARGET_ANALYSIS,
+    EnvelopeRefused,
+    conversion_for,
+    envelope_stage,
+    reserve,
+    settle,
+)
 from app.storage.repository import (
     artifact_store,
     design_repository,
+    execution_envelope_store,
     final_acceptance_repository,
     generation_repository,
     layout_proof_repository,
@@ -265,6 +276,12 @@ async def target_set_changed_handler(_request: Request, error: TargetSetChanged)
 async def generation_error_handler(_request: Request, error: GenerationError) -> JSONResponse:
     """Map generation-domain failures to the historical HTTP status/detail."""
     return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
+@app.exception_handler(EnvelopeRefused)
+async def envelope_refused_handler(_request: Request, error: EnvelopeRefused) -> JSONResponse:
+    """A conversion envelope refusal: structured, attributable and before any I/O."""
+    return JSONResponse(status_code=409, content={"detail": error.detail})
+
 
 @app.exception_handler(DocumentLimitError)
 async def document_limit_error_handler(_request: Request, error: DocumentLimitError) -> JSONResponse:
@@ -716,6 +733,29 @@ def _refused_document_errors() -> Iterator[None]:
         raise _document_refusal("pdf_no_extractable_text", PDF_NO_TEXT_MESSAGE) from exc
 
 
+def _conversion_envelope(artifact_id: str) -> tuple[str, ExecutionEnvelopeStore]:
+    """The artifact's ONE conversion envelope (ADR 0010); opened here if none exists."""
+    store = execution_envelope_store(DATABASE_URL)
+    return conversion_for(artifact_id, store=store)["conversion_id"], store
+
+
+def _observed_extraction_usage(client: LLMClient) -> dict[str, int]:
+    """Token totals arrive with the response: observed, never compared with a ceiling."""
+    usage = dict(getattr(client, "total_usage", {}) or {})
+    return {name: int(usage.get(name) or 0) for name in ("input_tokens", "output_tokens")}
+
+
+async def _segment_under_envelope(artifact_id: str, client: LLMClient, extracted_text: str):
+    """Reserve the extraction request before dispatch, then book what was observed."""
+    conversion_id, store = _conversion_envelope(artifact_id)
+    with envelope_stage(conversion_id, STAGE_CANDIDATE_EXTRACTION, store=store):
+        reserve(conversion_id, STAGE_CANDIDATE_EXTRACTION, "model_requests", store=store)
+        output = await _run_off_loop(segment_and_extract_resume, extracted_text, client)
+        settle(conversion_id, STAGE_CANDIDATE_EXTRACTION, "model_requests", "consumed",
+               observed=_observed_extraction_usage(client), store=store)
+        return output
+
+
 @app.post("/api/process")
 async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     if not file.filename:
@@ -743,13 +783,16 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     provider = os.getenv("API_LLM_PROVIDER")
     llm_client = _build_extraction_client(provider)
+    # ADR 0010 decision 2: the artifact identity and its conversion envelope exist
+    # before the first paid call, so extraction is never dispatched unaccounted.
+    artifact_id = new_artifact_id()
     segmentation_started = time.monotonic()
     try:
         # The provider request is dispatched here. Cancelling this handler
         # (server shutdown or explicit task cancellation, not a client
         # disconnect) cannot undo it and nothing retries it.
-        segmentation_output = await _run_off_loop(
-            segment_and_extract_resume, extracted_text, llm_client
+        segmentation_output = await _segment_under_envelope(
+            artifact_id, llm_client, extracted_text
         )
         audit = audit_segmentation_lines(
             extracted_text,
@@ -777,7 +820,6 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         },
     )
 
-    artifact_id = new_artifact_id()
     artifact_dir = _prepare_artifact_dir(artifact_id)
     field_evidence = build_candidate_field_evidence(profile, normalized_document)
     source_path = _write_source_resume(
@@ -1086,15 +1128,22 @@ async def upload_target_format(
     target_format: TargetFormatMetadata
     analyzed_style_spec: LayoutTemplateSpec
     if suffix == ".pdf":
+        conversion_id, store = _conversion_envelope(resolved_artifact_id)
         try:
-            target_format, analyzed_style_spec = await _publish_off_loop(
-                abandoned,
-                _publish_pdf_target,
-                resolved_artifact_id,
-                file.filename,
-                suffix,
-                contents,
-            )
+            # One Adobe Extract operation is one analyzer operation: its own unit,
+            # reserved before dispatch and never counted as model tokens.
+            with envelope_stage(conversion_id, STAGE_TARGET_ANALYSIS, store=store):
+                reserve(conversion_id, STAGE_TARGET_ANALYSIS, "analyzer_operations", store=store)
+                target_format, analyzed_style_spec = await _publish_off_loop(
+                    abandoned,
+                    _publish_pdf_target,
+                    resolved_artifact_id,
+                    file.filename,
+                    suffix,
+                    contents,
+                )
+                settle(conversion_id, STAGE_TARGET_ANALYSIS, "analyzer_operations", "consumed",
+                       store=store)
         except AdobeConfigurationError as exc:
             raise HTTPException(
                 status_code=503,

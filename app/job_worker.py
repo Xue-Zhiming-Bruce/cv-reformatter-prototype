@@ -25,6 +25,9 @@ from app.jobs import (JobClaim, JobError, JobProgress, JobRecord, JobSubmission,
 from app.profile_approval import ApprovedProfileVersion, load_profile_revision
 from app.storage.artifact_store import ArtifactStoreConflict, ArtifactStoreError
 from app.storage.job_queue import JobLeaseLost, PostgresJobQueue
+from app.storage.envelope_store import default_store
+from app.storage.execution_envelope import (STAGE_LAYOUT_PROOFS, conversion_for, envelope_stage,
+                                            nested_stage, record_reused)
 from app.storage.postgres import PostgresGenerationRepository, PostgresProfileRevisionRepository, artifact_sessions, postgres_engine
 from app.resource_limits import bounded_pdf_page_count
 from app.target_publication import TARGETS_DIRNAME, TargetSet
@@ -532,8 +535,8 @@ class NativeJobWorker:
     def _child_failure(self, claim: JobClaim, bundle: Path) -> JobRecord:
         failure = json.loads((bundle / "failure.json").read_text()) if (bundle / "failure.json").exists() else {}
         code = failure.get("error_code", "execution_failed")
-        error: JobError = code if code in {"budget_exceeded", "inputs_changed", "execution_failed",
-                                           "provider_outcome_unknown"} else "execution_failed"
+        error: JobError = code if code in {"budget_exceeded", "deadline_exceeded", "inputs_changed",
+                                           "execution_failed", "provider_outcome_unknown"} else "execution_failed"
         return self.queue.fail(claim, error=error,
                                state="needs_attention" if error == "provider_outcome_unknown" else "failed")
 
@@ -668,6 +671,16 @@ class _ProgressWriter:
         self.path.write_text(self.state.model_dump_json())
 
 
+def failure_code(exc: BaseException) -> str:
+    """The safe job error a child raises: envelope refusals keep their own code."""
+    code = getattr(exc, "error_code", None)
+    if code in {"budget_exceeded", "deadline_exceeded"}:
+        return str(code)
+    if budget_exhausted(exc):
+        return "budget_exceeded"
+    return "provider_outcome_unknown" if provider_outcome_unknown(exc) else "execution_failed"
+
+
 def record_failure(bundle: Path, error_code: str, exc: BaseException) -> None:
     (bundle / "failure.json").write_text(json.dumps(
         {"error_code": error_code, "message": str(exc)[:2000]}, indent=2))
@@ -719,6 +732,53 @@ def render_snapshot(bundle: Path) -> None:
     (bundle / "execution_result.json").write_text(json.dumps({"state": "rendered"}))
 
 
+def _proof_variants(bundle: Path, payload: TargetProofPayload, *, layout_spec, target_pdf: Path,
+                    target_checksum: str, progress: _ProgressWriter,
+                    variants: dict[str, str]) -> dict:
+    """Each variant draws a child allocation from the job's one conversion envelope.
+
+    The payload ceiling used to be handed to all three renders independently, so
+    one attempt could reach three times it. A variant now gets its own allocation
+    from the artifact's single stored balance, and a reused checkpoint charges
+    nothing (recorded as ``reused``).
+    """
+    from app.template_analysis.layout_proof_rendering import LayoutProofRenderError
+    from app.template_analysis.layout_proof_schemas import LengthVariant
+    from app.template_analysis.layout_proof_service import create_proof_variant
+    from app.template_analysis.layout_proof_validation import reusable_variant_evidence
+
+    store = default_store()
+    conversion_id = conversion_for(payload.artifact_id, store=store)["conversion_id"]
+    outcomes: dict = {}
+    with envelope_stage(conversion_id, STAGE_LAYOUT_PROOFS, store=store):
+        for variant in LengthVariant:
+            stage = f"{STAGE_LAYOUT_PROOFS}:{variant.value}"
+            reused = reusable_variant_evidence(bundle, variant, target_checksum=payload.target_sha256,
+                layout_sha256=payload.layout_sha256, renderer_version=payload.renderer_version,
+                execution_mode="offline-renderer/1")
+            if reused is not None:
+                record_reused(conversion_id, stage, store=store)
+                outcomes[variant], variants[variant.value] = reused, "reused"
+            else:
+                variants[variant.value] = "rendering"
+                progress.write("render", variants, provider_call_in_flight=True)
+                with nested_stage(stage) as allocation:
+                    outcomes[variant] = create_proof_variant(
+                        artifact_dir=bundle, artifact_id=payload.artifact_id, layout_spec=layout_spec,
+                        target_pdf=target_pdf, target_checksum=target_checksum, variant=variant,
+                        presentation_label_approval=payload.presentation_label_approval,
+                        max_model_requests=min(payload.max_model_requests, allocation.model_requests),
+                        max_tool_calls=min(payload.max_tool_calls, allocation.tool_calls))
+                variants[variant.value] = "rendered" if outcomes[variant].structural.passed else "failed"
+                if not outcomes[variant].structural.passed:
+                    progress.write("validate", variants)
+                    raise LayoutProofRenderError(
+                        f"variant '{variant.value}' failed structural validation")
+            progress.write("validate", variants)
+            variants[variant.value] = "validated" if variants[variant.value] != "reused" else "reused"
+    return outcomes
+
+
 def render_target_snapshot(bundle: Path) -> None:
     """Render an approved, identity-matched target-based generation offline."""
     os.environ["LLM_PROVIDER"] = "mock"
@@ -741,8 +801,7 @@ def render_target_snapshot(bundle: Path) -> None:
             required_execution="offline-renderer/1",
         )
     except BaseException as exc:
-        record_failure(bundle, "budget_exceeded" if budget_exhausted(exc) else
-                       "provider_outcome_unknown" if provider_outcome_unknown(exc) else "execution_failed", exc)
+        record_failure(bundle, failure_code(exc), exc)
         raise
     progress.write("review_ready")
     (bundle / "execution_result.json").write_text(json.dumps({"state": "rendered"}))
@@ -751,14 +810,11 @@ def render_target_snapshot(bundle: Path) -> None:
 def render_proof_snapshot(bundle: Path) -> None:
     """Render short/medium/long proofs, reusing only identity-matched checkpoints."""
     os.environ["LLM_PROVIDER"] = "mock"
-    from app.template_analysis.layout_proof_rendering import LayoutProofRenderError
     from app.template_analysis.layout_proof_schemas import LengthVariant
-    from app.template_analysis.layout_proof_service import (create_proof_variant,
-                                                            pending_layout_proof_approval,
+    from app.template_analysis.layout_proof_service import (pending_layout_proof_approval,
                                                             resolve_layout_proof_context,
                                                             save_layout_proof_approval,
                                                             verify_approval_files)
-    from app.template_analysis.layout_proof_validation import reusable_variant_evidence
 
     payload = TargetProofPayload.model_validate_json((bundle / "job_request.json").read_text())
     install_offline_renderer()
@@ -772,35 +828,16 @@ def render_proof_snapshot(bundle: Path) -> None:
         if target_checksum != payload.target_sha256:
             raise ValueError("The bundled target document changed")
         progress.write("render", variants)
-        outcomes = {}
-        for variant in LengthVariant:
-            reused = reusable_variant_evidence(bundle, variant, target_checksum=payload.target_sha256,
-                layout_sha256=payload.layout_sha256, renderer_version=payload.renderer_version,
-                execution_mode="offline-renderer/1")
-            if reused is not None:
-                outcomes[variant], variants[variant.value] = reused, "reused"
-            else:
-                variants[variant.value] = "rendering"
-                progress.write("render", variants, provider_call_in_flight=True)
-                reused = create_proof_variant(artifact_dir=bundle, artifact_id=payload.artifact_id,
-                    layout_spec=layout_spec, target_pdf=target_pdf, target_checksum=target_checksum,
-                    variant=variant, presentation_label_approval=payload.presentation_label_approval,
-                    max_model_requests=payload.max_model_requests, max_tool_calls=payload.max_tool_calls)
-                variants[variant.value] = "rendered" if reused.structural.passed else "failed"
-                outcomes[variant] = reused
-                if not reused.structural.passed:
-                    progress.write("validate", variants)
-                    raise LayoutProofRenderError(f"variant '{variant.value}' failed structural validation")
-            progress.write("validate", variants)
-            variants[variant.value] = "validated" if variants[variant.value] != "reused" else "reused"
+        outcomes = _proof_variants(bundle, payload, layout_spec=layout_spec, target_pdf=target_pdf,
+                                   target_checksum=target_checksum, progress=progress,
+                                   variants=variants)
         approval = pending_layout_proof_approval(artifact_id=payload.artifact_id,
             target_checksum=payload.target_sha256, layout_spec=layout_spec, outcomes=outcomes)
         verify_approval_files(bundle, approval)
         save_layout_proof_approval(bundle, approval, repository=None)
         progress.write("review_ready", variants)
     except BaseException as exc:
-        record_failure(bundle, "budget_exceeded" if budget_exhausted(exc) else
-                       "provider_outcome_unknown" if provider_outcome_unknown(exc) else "execution_failed", exc)
+        record_failure(bundle, failure_code(exc), exc)
         raise
     (bundle / "execution_result.json").write_text(json.dumps({"state": "proofs_rendered"}))
 

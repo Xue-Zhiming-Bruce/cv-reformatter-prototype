@@ -19,6 +19,18 @@ def artifact_store(*, database_url: str | None, local_database_path: Path) -> Ar
     return PostgresArtifactStore(postgres_engine(database_url))
 
 
+def execution_envelope_store(database_url: str | None):
+    """The envelope seam: durable in PostgreSQL, bounded in-process in the offline lane."""
+    from app.storage.envelope_store import ExecutionEnvelopeStore, default_store
+
+    if database_url is None:
+        return default_store()
+    from app.storage.postgres import PostgresExecutionEnvelopeStore, postgres_engine
+
+    store: ExecutionEnvelopeStore = PostgresExecutionEnvelopeStore(postgres_engine(database_url))
+    return store
+
+
 def profile_revision_repository(database_url: str | None) -> ProfileRevisionRepository | None:
     if database_url is None:
         return None

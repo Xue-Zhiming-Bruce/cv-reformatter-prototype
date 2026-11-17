@@ -96,6 +96,15 @@ from app.template_analysis.layout_proof_validation import (
     recompute_variant_evidence,
     validate_proof_structure,
 )
+from app.storage.execution_envelope import (
+    STAGE_CANDIDATE_GENERATION,
+    STAGE_LAYOUT_PROOFS,
+    EnvelopeRefused,
+    conversion_for,
+    envelope_stage,
+    nested_stage,
+)
+from app.storage.envelope_store import default_store
 from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
 from app.target_publication import TargetSet
 
@@ -573,22 +582,52 @@ def create_proof_variants(
     require_compilable_layout_spec(
         layout_spec, target_pdf=Path(target_pdf), target_checksum=target_checksum
     )
-    outcomes: dict[LengthVariant, VariantProofEvidence] = {}
-    for variant in LengthVariant:
-        outcomes[variant] = create_proof_variant(
-            artifact_dir=artifact_dir,
-            artifact_id=artifact_id,
-            layout_spec=layout_spec,
-            target_pdf=target_pdf,
-            target_checksum=target_checksum,
-            variant=variant,
-            presentation_label_approval=presentation_label_approval,
-        )
+    outcomes = _render_variants_under_envelope(
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id,
+        layout_spec=layout_spec,
+        target_pdf=target_pdf,
+        target_checksum=target_checksum,
+        presentation_label_approval=presentation_label_approval,
+    )
     if repository is not None:
         pending = pending_layout_proof_approval(artifact_id=artifact_id,
             target_checksum=target_checksum, layout_spec=layout_spec, outcomes=outcomes)
         verify_approval_files(artifact_dir, pending)
         save_layout_proof_approval(artifact_dir, pending, repository=repository)
+    return outcomes
+
+
+def _render_variants_under_envelope(
+    *,
+    artifact_dir: str | Path,
+    artifact_id: str,
+    layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
+    target_pdf: str | Path,
+    target_checksum: str,
+    presentation_label_approval: Any = None,
+) -> dict[LengthVariant, VariantProofEvidence]:
+    """One child allocation per variant under ONE parent envelope (ADR 0010).
+
+    Before this, three variants each started a fresh root budget, so the proof
+    stage could reach three times the payload ceiling. Now every variant draws
+    from the artifact's single stored balance and is refused there.
+    """
+    store = default_store()
+    conversion = conversion_for(artifact_id, store=store)
+    outcomes: dict[LengthVariant, VariantProofEvidence] = {}
+    with envelope_stage(conversion["conversion_id"], STAGE_LAYOUT_PROOFS, store=store):
+        for variant in LengthVariant:
+            with nested_stage(f"{STAGE_LAYOUT_PROOFS}:{variant.value}"):
+                outcomes[variant] = create_proof_variant(
+                    artifact_dir=artifact_dir,
+                    artifact_id=artifact_id,
+                    layout_spec=layout_spec,
+                    target_pdf=target_pdf,
+                    target_checksum=target_checksum,
+                    variant=variant,
+                    presentation_label_approval=presentation_label_approval,
+                )
     return outcomes
 
 
@@ -710,16 +749,44 @@ def render_candidate_document(
         raise LayoutProofMismatchError("Agentic generation target checksum does not match the approved target")
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / "candidate_profile.html"
+    store = default_store()
+    conversion = conversion_for(artifact_id, store=store)
+    with envelope_stage(conversion["conversion_id"], STAGE_CANDIDATE_GENERATION, store=store):
+        return _render_candidate_into(
+            out_dir=out_dir,
+            html_path=html_path,
+            approval=approval,
+            layout_spec=layout_spec,
+            render_context=render_context,
+            target_pdf=target_pdf,
+            max_model_requests=max_model_requests,
+            max_tool_calls=max_tool_calls,
+        )
+
+
+def _render_candidate_into(
+    *,
+    out_dir: Path,
+    html_path: Path,
+    approval: LayoutProofApproval,
+    layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
+    render_context: ClientFacingRenderContext,
+    target_pdf: Path,
+    max_model_requests: int | None,
+    max_tool_calls: int | None,
+) -> tuple[Path, Path]:
+    """The candidate render itself, inside the conversion envelope's stage scope."""
     try:
-        html_path, pdf_path = render_generation_into(render_context, layout_spec, html_path,
+        return render_generation_into(render_context, layout_spec, html_path,
             out_dir / "candidate_profile.pdf", target_pdf, renderer_version=approval.renderer_version,
             layout_proof_approval=approval,
             max_model_requests=max_model_requests, max_tool_calls=max_tool_calls)
+    except EnvelopeRefused:
+        raise  # An envelope refusal is the API's 409, not a render failure.
     except (RuntimeError, ValueError, OSError) as exc:
         raise LayoutProofRenderError(
             f"final candidate document could not be rendered: {exc}"
         ) from exc
-    return html_path, pdf_path
 
 
 def _load_json_model(path: Path, model):
