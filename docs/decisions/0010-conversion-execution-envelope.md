@@ -189,9 +189,13 @@ Reused and therefore not re-charged, when the existing identity checks allow it:
 identity-matched proof variant checkpoints
 (`app/job_worker.py:733-737`, `reusable_variant_evidence`), a target analysis
 already owned by the artifact, the saved profile revision, and — if ADR 0009 is
-accepted — a reused approved template reference. A reused stage is recorded in
-the envelope as `reused`, with zero reservation, so the refusal payload never
-implies work that did not run.
+accepted — a reused approved template reference. Only the identity-matched proof
+variant checkpoint has a skip path in the tree today: it is recorded in the
+envelope as `reused`, with zero reservation (`record_reused`,
+`app/job_worker.py:760`), so the refusal payload never implies work that did not
+run. The other three classes have no path that skips the dispatch, so they
+record no `reused` event; nothing is dispatched for them and nothing is charged,
+and `envelope_view(...)["reused_stages"]` stays empty until such a path exists.
 
 ### Ownership And Allocation
 
@@ -466,7 +470,7 @@ implemented with, all of them reusing existing tree values:
 | Contract detail | Implemented value and source |
 | --- | --- |
 | Parent ceilings per conversion | `model_requests: 36`, `tool_calls: 72` (`app/jobs.py`) |
-| Analyzer operations | `1` per conversion — the tree dispatches exactly one Adobe Extract operation per target analysis (`app/main.py` `_analyze_pdf_target` → `run_adobe_layout`) |
+| Analyzer operations | `3` per conversion (`EnvelopeLimits.analyzer_operations`, `app/storage/execution_envelope.py`) — one Adobe Extract operation is dispatched per target analysis attempt (`app/main.py` `_analyze_pdf_target` → `run_adobe_layout`), and the reused bound is the one the tree already applies to a repeated uploaded-target operation, `TARGET_MAX_ATTEMPTS`; never counted as model tokens |
 | One deadline | 900 s (`app/jobs.py` `TARGET_TIMEOUT_SECONDS`), checked before dispatch and between stages |
 | Protected repair/review reserve | delegated to issue #41's predicate `app/pipeline/repair_policy.py::_repair_request_requirement` with `AGENTIC_BUILDER_RESERVE_REQUESTS` — never re-derived here |
 | Tokens | observed values with `limit: null`; never a cap |
