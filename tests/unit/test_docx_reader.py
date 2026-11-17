@@ -1,4 +1,5 @@
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 import base64
 import io
@@ -6,6 +7,7 @@ import zipfile
 
 import pytest
 from docx import Document
+from docx.document import Document as DocumentObject
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.opc.packuri import PackURI
 from docx.opc.part import Part
@@ -1506,7 +1508,8 @@ def test_read_docx_names_text_a_group_shape_carries_beside_a_text_box(
 _SHAPE_NAMESPACES = (
     'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
     'xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" '
-    'xmlns:v="urn:schemas-microsoft-com:vml"'
+    'xmlns:v="urn:schemas-microsoft-com:vml" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
 )
 
 
@@ -1565,28 +1568,48 @@ def _group_drawing(*shapes: str) -> str:
     )
 
 
-def _read_anchored_paragraph(tmp_path: Path, runs: str) -> ExtractedDocxContent:
-    """Read a resume whose one body paragraph anchors these runs."""
+def _read_anchored_paragraph(
+    tmp_path: Path, runs: str | Callable[[DocumentObject], str]
+) -> ExtractedDocxContent:
+    """Read a resume whose one body paragraph anchors these runs.
+
+    A row that has to point at a part builds its runs against the document, so an
+    image relationship id can be the one this package actually holds.
+    """
     path = tmp_path / "resume.docx"
     document = Document()
     body = document.element.body
+    markup = runs(document) if callable(runs) else runs
     body.insert(
         len(body) - 1,
         parse_xml(
             f'<w:p {nsdecls("w", "a", "wp")} {_SHAPE_NAMESPACES}>'
-            f"<w:r><w:t>Anchor:</w:t></w:r>{runs}</w:p>"
+            f"<w:r><w:t>Anchor:</w:t></w:r>{markup}</w:p>"
         ),
     )
     document.save(path)
     return read_docx(path)
 
 
+def _image_id(document: DocumentObject) -> str:
+    """A relationship id the package resolves to an image, so a shape draws art."""
+    return document.part.get_or_add_image(io.BytesIO(_one_pixel_png()))[0]
+
+
 #: The drawing/text-box truth table: every shape a probe found or can nest, with
 #: the text the walk must read and the gaps it must report. One row per cell, so a
 #: fourth nesting cannot pass as art or go silent with unread text: a character is
 #: quiet only when the walk read that exact content, and a box body's characters
-#: are the box's whether or not it was read.
-_DRAWING_TEXT_TRUTH_TABLE: list[tuple[str, str, list[str], list[tuple[str, int, bool]]]] = [
+#: are the box's whether or not it was read. A row whose markup points at a part
+#: builds it against the document, so the id resolves the way a package does.
+_DRAWING_TEXT_TRUTH_TABLE: list[
+    tuple[
+        str,
+        str | Callable[[DocumentObject], str],
+        list[str],
+        list[tuple[str, int, bool]],
+    ]
+] = [
     (
         "paint_at_body_level",
         _r(_drawing(_paint("PAINT"))),
@@ -1704,6 +1727,54 @@ _DRAWING_TEXT_TRUTH_TABLE: list[tuple[str, str, list[str], list[tuple[str, int, 
         ["Anchor:"],
         [("unknown_inline", 1, True)],
     ),
+    (
+        "image_inside_a_read_box_body",
+        lambda document: _r(
+            _legacy_box(
+                _p("OUTER")
+                + _p_with(
+                    _r(
+                        '<w:pict><v:shape><v:imagedata r:id="'
+                        f'{_image_id(document)}"/></v:shape></w:pict>'
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER"],
+        [("visual_element", 1, False)],
+    ),
+    (
+        "image_beside_a_read_box",
+        lambda document: _r(
+            _drawing(
+                _box(_p("BOX")),
+                '<wps:wsp><a:graphic><a:graphicData'
+                ' uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+                f'<a:blip r:embed="{_image_id(document)}"/>'
+                "</a:graphicData></a:graphic></wps:wsp>",
+            )
+        ),
+        ["Anchor:", "BOX"],
+        [("visual_element", 1, False)],
+    ),
+    (
+        "wordart_inside_a_read_box_body",
+        _r(
+            _drawing(
+                _box(
+                    _p("OUTER")
+                    + _p_with(
+                        _r(
+                            '<w:pict><v:shape><v:textpath string="WORDART"/>'
+                            "</v:shape></w:pict>"
+                        )
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER"],
+        [("visual_element", 1, False)],
+    ),
 ]
 
 
@@ -1726,8 +1797,12 @@ def test_read_docx_keeps_drawing_text_blocking_until_the_walk_reads_it(
         (item.kind, item.count, item.blocks_source_review)
         for item in content.limitations
     ] == limitations
-    # Art is never the bucket unread text falls into, so no cell may report one.
-    assert all(item.kind != "visual_element" for item in content.limitations)
+    # Art is never the bucket unread text falls into: it is reported, never blocking.
+    assert all(
+        not item.blocks_source_review
+        for item in content.limitations
+        if item.kind == "visual_element"
+    )
 
 
 def test_read_docx_reports_paint_text_in_a_header_and_footer_box(tmp_path: Path) -> None:

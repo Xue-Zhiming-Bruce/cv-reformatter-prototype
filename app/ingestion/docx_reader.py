@@ -295,6 +295,10 @@ _TEXT_LOCAL_NAMES = frozenset(
 #: the box carries, a drawing owns the text it paints. The nearest one above a
 #: character decides who is answerable for it.
 _TEXT_OWNERS = frozenset({_DRAWING, _PICTURE, _TEXT_BOX})
+#: Local names of the markup that draws content this reader never calls text: a
+#: DrawingML image fill, a VML image fill, and VML WordArt, whose characters live
+#: in a ``string`` attribute no text node carries.
+_ART_LOCAL_NAMES = frozenset({"blip", "imagedata", "textpath"})
 #: Block children one container walk reads in place.
 _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
 #: The mark in the text -> the kind of note it points at. Only a mark the walk
@@ -1549,7 +1553,8 @@ def _drawing_limitation(
     whose target is external, is not known to be pixels either, so both are
     reported the same way. A text box the drawing holds keeps its own text-box
     entry, so ``None`` sends that element to the text-box count instead of naming
-    the same content twice.
+    the same content twice — unless the drawing also draws art the box does not
+    account for (``_drawing_carries_art``), which nothing else names.
 
     A character belongs to the nearest drawing or ``w:txbxContent`` body above it
     (``_text_box_owns``). A body's own text is that box's business: the box walk
@@ -1571,9 +1576,33 @@ def _drawing_limitation(
         return "embedded_part"
     if has_text:
         return "text_box"
-    if has_text_box:
+    if has_text_box and not _drawing_carries_art(drawing, account, namespaces, owner):
         return None
     return "visual_element"
+
+
+def _drawing_carries_art(
+    drawing: BaseOxmlElement,
+    account: _ReadAccount,
+    namespaces: Mapping[str, str],
+    owner: Part,
+) -> bool:
+    """True when a drawing draws art a text box in it does not account for.
+
+    An image fill, VML WordArt's characters and a nested drawing that is itself
+    nothing but art all paint content no walk reads, whether they sit in a box body
+    the walk read or beside that box. Nothing else names them, so the drawing keeps
+    its own ``visual_element`` entry; a nested drawing that is only a box is
+    accounted for by that box and is not art.
+    """
+    for item in _selected_elements(drawing, account, namespaces):
+        if _local_name(item) in _ART_LOCAL_NAMES:
+            return True
+        if item.tag in (_DRAWING, _PICTURE) and _drawing_limitation(
+            item, account, namespaces, owner
+        ) == "visual_element":
+            return True
+    return False
 
 
 def _text_box_owns(element: BaseOxmlElement) -> bool:
